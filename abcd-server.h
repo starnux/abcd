@@ -7,6 +7,7 @@
 #include "abcd.h"
 
 void watch_add_readfd(int fd, int (*cb)(int, void*), void *data);
+void watch_del_readfd(int fd);
 int watch_add_quit(int (*cb)(int, void*), void *data);
 void watch_timer_add(int timeout_ms, void (*cb)(void *), void *data);
 void watch_quit(void);

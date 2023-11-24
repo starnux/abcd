@@ -44,6 +44,7 @@
 #include "device.h"
 #include "boot.h"
 #include "pyamlboot.h"
+#include "dfu.h"
 #include "console.h"
 #include "list.h"
 #include "ppps.h"
@@ -105,6 +106,62 @@ static bool device_check_access(struct device *device,
 	return false;
 }
 
+static void device_open_boot(struct device *device)
+{
+	void *boot_stage_data;
+	char *boot_stage_options;
+
+	if (device->boot_stage >= MAX_BOOT_STAGES ||
+	    device->boot_stage >= device->boot_num_stages)
+		return;
+
+	boot_stage_options = device->boot_stage_options[device->boot_stage];
+
+	switch (device->boot_stages[device->boot_stage]) {
+	case BOOT_PYAMLBOOT:
+		boot_stage_data = pyamlboot_open(device, device->boot_ops, boot_stage_options);
+		break;
+	case BOOT_DFU:
+		boot_stage_data = dfu_open(device, device->boot_ops, boot_stage_options);
+		break;
+	default:
+		errx(1, "No boot type defined for stage %u", device->boot_stage);
+	}
+
+	device->boot_stage_data[device->boot_stage] = boot_stage_data;
+}
+
+void device_boot(struct device *device, const void *data, size_t len)
+{
+	void *boot_stage_data = device->boot_stage_data[device->boot_stage];
+
+	warnx("booting the board...");
+
+	device->do_boot(boot_stage_data, data, len);
+
+	switch (device->boot_stages[device->boot_stage]) {
+	case BOOT_PYAMLBOOT:
+		pyamlboot_close(device, boot_stage_data);
+		break;
+	case BOOT_DFU:
+		dfu_close(device, boot_stage_data);
+		break;
+	default:
+		errx(1, "No boot type defined for stage %u", device->boot_stage);
+	}
+
+	device->do_boot = NULL;
+
+	/* Increase boot stage */
+	++device->boot_stage;
+
+	if (device->boot_stage >= MAX_BOOT_STAGES ||
+	    device->boot_stage >= device->boot_num_stages)
+		return;
+
+	device_open_boot(device);
+}
+
 struct device *device_open(const char *board,
 			   const char *username,
 			   struct boot_ops *boot_ops)
@@ -138,7 +195,9 @@ found:
 	if (device->usb_always_on)
 		device_usb(device, true);
 
-	device->boot = pyamlboot_open(device->serial, boot_ops, NULL);
+	device->boot_ops = boot_ops;
+
+	device_open_boot(device);
 
 	return device;
 }
@@ -270,12 +329,6 @@ int device_write(struct device *device, const void *buf, size_t len)
 	assert(device->write);
 
 	return device->write(device, buf, len);
-}
-
-void device_boot(struct device *device, const void *data, size_t len)
-{
-	warnx("booting the board...");
-	device->do_boot(device, data, len);
 }
 
 void device_send_break(struct device *device)

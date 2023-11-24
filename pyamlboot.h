@@ -3,10 +3,10 @@
 
 #include "device.h"
 
-struct pyamlboot;
 struct boot_ops;
 
-struct pyamlboot *pyamlboot_open(const char *serial, struct boot_ops *ops, void *);
-int pyamlboot_boot(struct device *dev, const void *data, size_t len);
+void *pyamlboot_open(struct device *device, struct boot_ops *ops, char *options);
+void pyamlboot_close(struct device *device, void *boot_data);
+int pyamlboot_boot(void *boot_data, const void *data, size_t len);
 
 #endif

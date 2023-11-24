@@ -44,7 +44,6 @@
 #include "device.h"
 #include "device_parser.h"
 #include "boot.h"
-#include "pyamlboot.h"
 #include "list.h"
 
 static bool quit_invoked;
@@ -80,7 +79,7 @@ int tty_open(const char *tty, struct termios *old)
 	return fd;
 }
 
-static void boot_opened(void *data)
+static void boot_opened(void)
 {
 	const uint8_t one = 1;
 
@@ -89,12 +88,12 @@ static void boot_opened(void *data)
 	abcd_send_buf(MSG_BOOT_PRESENT, 1, &one);
 }
 
-static void boot_info(void *data, const void *buf, size_t len)
+static void boot_info(const void *buf, size_t len)
 {
 	fprintf(stderr, "%s\n", (const char *)buf);
 }
 
-static void boot_disconnect(void *data)
+static void boot_disconnect(void)
 {
 	const uint8_t zero = 0;
 
@@ -257,6 +256,19 @@ struct timer {
 
 static struct list_head read_watches = LIST_INIT(read_watches);
 static struct list_head timer_watches = LIST_INIT(timer_watches);
+
+void watch_del_readfd(int fd)
+{
+	struct watch *w;
+	struct watch *tmp;
+
+	list_for_each_entry_safe(w, tmp, &read_watches, node) {
+		if (w->fd == fd) {
+			list_del(&w->node);
+			free(w);
+		}
+	}
+}
 
 void watch_add_readfd(int fd, int (*cb)(int, void*), void *data)
 {

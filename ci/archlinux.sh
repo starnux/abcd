@@ -19,6 +19,7 @@ esac
 pacman -Syu --noconfirm \
 	libftdi-compat \
 	libyaml \
+	libgpiod \
 	systemd-libs \
 	pkgconf \
 	meson \

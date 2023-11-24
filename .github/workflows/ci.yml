@@ -41,7 +41,8 @@ jobs:
           # Fails on configure on GCC and clang (process restrictions?)
           # - fedora:rawhide
           - fedora:latest
-          - fedora:39
+          # Uses ligpiod 2.x 
+          # - fedora:39
           - fedora:38
           - fedora:37
           - ubuntu:lunar # EOL 01.2024

@@ -48,10 +48,14 @@
 #include "circ_buf.h"
 #include "list.h"
 
+#define MAX_BOOT_FILES	4
+
 static bool quit;
 static bool boot_done;
 
-static const char *boot_file;
+static const char *boot_files[MAX_BOOT_FILES];
+static unsigned int boot_num_stages;
+static unsigned int boot_stage;
 
 static struct termios *tty_unbuffer(void)
 {
@@ -353,8 +357,7 @@ static void boot_work_fn(struct work *_work, int ssh_stdin)
 
 	left = MIN(2048, work->size - work->offset);
 
-	ret = abcd_send_buf(ssh_stdin, MSG_BOOT_DOWNLOAD,
-			    left,
+	ret = abcd_send_buf(ssh_stdin, MSG_BOOT_DOWNLOAD, left,
 			    (char *)work->data + work->offset);
 	if (ret < 0 && errno == EAGAIN) {
 		list_add(&work_items, &_work->node);
@@ -378,12 +381,19 @@ static void request_boot_files(void)
 	struct stat sb;
 	int fd;
 
+	if (boot_stage >= boot_num_stages) {
+		errx(1, "Boot stage %u doesn't have a boot file",
+		     boot_stage);
+
+		return;
+	}
+
 	work = calloc(1, sizeof(*work));
 	work->work.fn = boot_work_fn;
 
-	fd = open(boot_file, O_RDONLY);
+	fd = open(boot_files[boot_stage], O_RDONLY);
 	if (fd < 0)
-		err(1, "failed to open \"%s\"", boot_file);
+		err(1, "failed to open \"%s\"", boot_files[boot_stage]);
 
 	fstat(fd, &sb);
 
@@ -506,7 +516,11 @@ static int handle_message(struct circ_buf *buf)
 				else
 					quit = true;
 			} else {
-				boot_done = true;
+				++boot_stage;
+				warnx("new boot_stage: %u\n", boot_stage);
+
+				if (boot_stage >= boot_num_stages)
+					boot_done = true;
 				// printf("======================================== MSG_FASTBOOT_PRESENT(off)\n");
 			}
 			break;
@@ -554,7 +568,7 @@ static void usage(void)
 	extern const char *__progname;
 
 	fprintf(stderr, "usage: %s -b <board> -h <host> [-t <timeout>] "
-			"[-T <inactivity-timeout>] boot.bin\n",
+			"[-T <inactivity-timeout>] boot.bin [boot2.bin [bootX.bin [...]]]\n",
 			__progname);
 	fprintf(stderr, "usage: %s -i -b <board> -h <host>\n",
 			__progname);
@@ -638,11 +652,18 @@ int main(int argc, char **argv)
 		if (optind >= argc || !board)
 			usage();
 
-		boot_file = argv[optind];
-		if (lstat(boot_file, &sb))
-			err(1, "unable to read \"%s\"", boot_file);
-		if (!S_ISREG(sb.st_mode) && !S_ISLNK(sb.st_mode))
-			errx(1, "\"%s\" is not a regular file", boot_file);
+		while (optind < argc) {
+			boot_files[boot_num_stages] = argv[optind];
+			if (lstat(boot_files[boot_num_stages], &sb))
+				err(1, "unable to read \"%s\"",
+				    boot_files[boot_num_stages]);
+			if (!S_ISREG(sb.st_mode) && !S_ISLNK(sb.st_mode))
+				errx(1, "\"%s\" is not a regular file",
+				     boot_files[boot_num_stages]);
+
+			++optind;
+			++boot_num_stages;
+		}
 
 		request_select_board(board);
 		break;

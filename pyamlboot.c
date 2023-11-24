@@ -52,15 +52,16 @@
 #include "boot.h"
 
 struct pyamlboot {
-	const char *serial;
+	const char *cmd;
 
 	char *dev_path;
-
-	void *data;
 
 	struct boot_ops *ops;
 
 	struct udev_monitor *mon;
+	int fd_mon;
+
+	bool disconnected;
 };
 
 static int handle_pyamlboot_add(struct pyamlboot *pyamlboot, const char *path)
@@ -68,7 +69,7 @@ static int handle_pyamlboot_add(struct pyamlboot *pyamlboot, const char *path)
 	pyamlboot->dev_path = strdup(path);
 
 	if (pyamlboot->ops && pyamlboot->ops->opened)
-		pyamlboot->ops->opened(pyamlboot->data);
+		pyamlboot->ops->opened();
 
 	return 0;
 }
@@ -81,6 +82,10 @@ static int handle_udev_event(int fd, void *data)
 	const char *action;
 	const char *vendor_id;
 	const char *product_id;
+
+	/* Monitor has been closed */
+	if (!pyamlboot->mon)
+		return 0;
 
 	dev = udev_monitor_receive_device(pyamlboot->mon);
 
@@ -110,7 +115,9 @@ static int handle_udev_event(int fd, void *data)
 		pyamlboot->dev_path = NULL;
 
 		if (pyamlboot->ops && pyamlboot->ops->disconnect)
-			pyamlboot->ops->disconnect(pyamlboot->data);
+			pyamlboot->ops->disconnect();
+
+		pyamlboot->disconnected = true;
 	}
 
 unref_dev:
@@ -118,12 +125,33 @@ unref_dev:
 
 	return 0;
 }
-	
-struct pyamlboot *pyamlboot_open(const char *serial, struct boot_ops *ops, void *data)
+
+void pyamlboot_close(struct device *device, void *boot_data)
 {
-	struct pyamlboot *fb;
+	struct pyamlboot *pyamlboot = boot_data;
+
+	device->do_boot = NULL;
+
+	watch_del_readfd(pyamlboot->fd_mon);
+	udev_monitor_filter_remove(pyamlboot->mon);
+	udev_monitor_unref(pyamlboot->mon);
+
+	pyamlboot->mon = NULL;
+	pyamlboot->fd_mon = -1;
+
+	if (pyamlboot->dev_path)
+		free(pyamlboot->dev_path);
+
+	if (!pyamlboot->disconnected && pyamlboot->ops && pyamlboot->ops->disconnect)
+		pyamlboot->ops->disconnect();
+
+	free(pyamlboot);
+}
+
+void *pyamlboot_open(struct device *device, struct boot_ops *ops, char *options)
+{
+	struct pyamlboot *pyamlboot;
 	struct udev* udev;
-	int fd;
 	struct udev_enumerate* udev_enum;
 	struct udev_list_entry* first, *item;
 
@@ -131,21 +159,20 @@ struct pyamlboot *pyamlboot_open(const char *serial, struct boot_ops *ops, void 
 	if (!udev)
 		err(1, "udev_new() failed");
 
-	fb = calloc(1, sizeof(struct pyamlboot));
-	if (!fb)
+	pyamlboot = calloc(1, sizeof(struct pyamlboot));
+	if (!pyamlboot)
 		err(1, "failed to allocate pyamlboot structure");
 
-	fb->serial = serial;
-	fb->ops = ops;
-	fb->data = data;
+	pyamlboot->cmd = options;
+	pyamlboot->ops = ops;
 	
-	fb->mon = udev_monitor_new_from_netlink(udev, "udev");
-	udev_monitor_filter_add_match_subsystem_devtype(fb->mon, "usb", NULL);
-	udev_monitor_enable_receiving(fb->mon);
+	pyamlboot->mon = udev_monitor_new_from_netlink(udev, "udev");
+	udev_monitor_filter_add_match_subsystem_devtype(pyamlboot->mon, "usb", NULL);
+	udev_monitor_enable_receiving(pyamlboot->mon);
 
-	fd = udev_monitor_get_fd(fb->mon);
+	pyamlboot->fd_mon = udev_monitor_get_fd(pyamlboot->mon);
 
-	watch_add_readfd(fd, handle_udev_event, fb);
+	watch_add_readfd(pyamlboot->fd_mon, handle_udev_event, pyamlboot);
 
 	udev_enum = udev_enumerate_new(udev);
 	udev_enumerate_add_match_subsystem(udev_enum, "usb");
@@ -159,12 +186,14 @@ struct pyamlboot *pyamlboot_open(const char *serial, struct boot_ops *ops, void 
 		const char *path;
 
 		path = udev_list_entry_get_name(item);
-		handle_pyamlboot_add(fb, path);
+		handle_pyamlboot_add(pyamlboot, path);
 	}
 
 	udev_enumerate_unref(udev_enum);
 
-	return fb;
+	device->do_boot = pyamlboot_boot;
+
+	return pyamlboot;
 }
 
 static int pyamlboot_execute(const char *command)
@@ -198,13 +227,13 @@ static int pyamlboot_execute(const char *command)
 	return -1;
 }
 
-int pyamlboot_boot(struct device *dev, const void *data, size_t len)
+int pyamlboot_boot(void *boot_data, const void *data, size_t len)
 {
-	struct pyamlboot *fb = dev->boot;
+	struct pyamlboot *pyamlboot = boot_data;
 	char *cmd = NULL;
 	int ret;
 
-	if (strstr(fb->serial, "boot-g12")) {
+	if (strstr(pyamlboot->cmd, "boot-g12")) {
 		char *boot_file;
 		int fd;
 		
@@ -218,7 +247,7 @@ int pyamlboot_boot(struct device *dev, const void *data, size_t len)
 		write(fd, data, len);
 		close(fd);
 
-		asprintf(&cmd, fb->serial, boot_file);
+		asprintf(&cmd, pyamlboot->cmd, boot_file);
 		ret = pyamlboot_execute(cmd);
 
 		unlink(boot_file);
@@ -245,7 +274,6 @@ int pyamlboot_boot(struct device *dev, const void *data, size_t len)
 			err(1, "Failed to create bl2 tmp file");
 			return -1;
 		}
-		// TODO check
 		write(fd, data, 49152);
 		close(fd);
 
@@ -254,11 +282,10 @@ int pyamlboot_boot(struct device *dev, const void *data, size_t len)
 			err(1, "Failed to create tpl tmp file");
 			return -1;
 		}
-		// TODO check
 		write(fd, &((const char *)data)[49152], len - 49152);
 		close(fd);
 
-		asprintf(&cmd, fb->serial, boot_dir);
+		asprintf(&cmd, pyamlboot->cmd, boot_dir);
 		ret = pyamlboot_execute(cmd);
 
 		unlink(boot_file_bl2);

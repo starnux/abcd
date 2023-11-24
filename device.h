@@ -5,26 +5,38 @@
 #include "list.h"
 
 struct boot_ops;
-struct pyamlboot;
+
+#define MAX_BOOT_STAGES  4
+
+enum boot_stage {
+	BOOT_NONE = 0,
+	BOOT_PYAMLBOOT,
+	BOOT_DFU,
+};
 
 struct device {
 	char *board;
 	char *control_dev;
 	char *console_dev;
 	char *name;
-	char *serial;
 	char *description;
 	char *ppps_path;
 	struct list_head *users;
 	unsigned voltage;
 	bool tickle_mmc;
 	bool usb_always_on;
-	struct pyamlboot *boot;
+	
 	unsigned int boot_key_timeout;
 	int state;
 	bool has_power_key;
 
-	int (*do_boot)(struct device *, const void *data, size_t len);
+	struct boot_ops *boot_ops;
+	char *boot_stage_options[MAX_BOOT_STAGES];
+	void *boot_stage_data[MAX_BOOT_STAGES];
+	enum boot_stage boot_stages[MAX_BOOT_STAGES];
+	unsigned int boot_num_stages;
+	unsigned int boot_stage;
+	int (*do_boot)(void *boot_data, const void *data, size_t len);
 
 	void *(*open)(struct device *dev);
 	void (*close)(struct device *dev);
@@ -65,7 +77,6 @@ int device_write(struct device *device, const void *buf, size_t len);
 
 void device_boot(struct device *device, const void *data, size_t len);
 
-void device_pyamlboot_boot(struct device *device);
 void device_send_break(struct device *device);
 void device_list_devices(const char *username);
 void device_info(const char *username, const void *data, size_t dlen);

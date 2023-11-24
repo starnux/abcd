@@ -38,7 +38,6 @@
 #include "conmux.h"
 #include "console.h"
 #include "ppps.h"
-#include "pyamlboot.h"
 
 #define TOKEN_LENGTH	16384
 
@@ -111,6 +110,38 @@ static void parse_board(struct device_parser *dp)
 
 			continue;
 		}
+		
+		if (!strcmp(key, "boot-stages")) {
+			if (accept(dp, YAML_SCALAR_EVENT, value))
+				continue;
+
+			expect(dp, YAML_SEQUENCE_START_EVENT, NULL);
+
+			while (accept(dp, YAML_MAPPING_START_EVENT, NULL)) {
+				while (accept(dp, YAML_SCALAR_EVENT, key)) {
+					enum boot_stage boot_stage_type = BOOT_NONE;
+
+					expect(dp, YAML_SCALAR_EVENT, value);
+
+					if (!strcmp(key, "pyamlboot")) {
+						boot_stage_type = BOOT_PYAMLBOOT;
+					} else if (!strcmp(key, "dfu")) {
+						boot_stage_type = BOOT_DFU;
+					} else {
+						fprintf(stderr, "device parser: Unknown boot stage '%s'\n", key);
+					}
+
+					dev->boot_stages[dev->boot_num_stages] = boot_stage_type;
+					dev->boot_stage_options[dev->boot_num_stages] = strdup(value);
+					++dev->boot_num_stages;
+				}
+
+				expect(dp, YAML_MAPPING_END_EVENT, NULL);
+			}
+			expect(dp, YAML_SEQUENCE_END_EVENT, NULL);
+
+			continue;
+		}
 
 		expect(dp, YAML_SCALAR_EVENT, value);
 
@@ -144,11 +175,6 @@ static void parse_board(struct device_parser *dp)
 			dev->send_break = console_send_break;
 		} else if (!strcmp(key, "voltage")) {
 			dev->voltage = strtoul(value, NULL, 10);
-		} else if (!strcmp(key, "pyamlboot")) {
-			dev->serial = strdup(value);
-
-			if (!dev->boot)
-				dev->do_boot = pyamlboot_boot;
 		} else if (!strcmp(key, "description")) {
 			dev->description = strdup(value);
 		} else if (!strcmp(key, "boot_key_timeout")) {
@@ -163,7 +189,7 @@ static void parse_board(struct device_parser *dp)
 		}
 	}
 
-	if (!dev->board || !dev->serial || !(dev->open || dev->console_dev)) {
+	if (!dev->board || !dev->boot_num_stages || !(dev->open || dev->console_dev)) {
 		fprintf(stderr, "device parser: insufficiently defined device\n");
 		exit(1);
 	}
